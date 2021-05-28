@@ -1,0 +1,382 @@
+<!DOCTYPE html>
+<html>
+	<head lang="en">
+		<meta charset="utf-8" />
+		<title>Signed QR Code Generator</title>
+
+		<meta name="viewport" content="width=device-width, initial-scale=1" />
+
+		<style>
+				html {
+					font-family: sans-serif;
+					-ms-text-size-adjust: 100%;
+					-webkit-text-size-adjust: 100%;
+				}
+				
+				body {
+					margin: 0;
+				}
+
+				button {
+					font-size: 1rem;
+				}
+
+				.container {
+					width: 90%;
+					max-width: 46rem;
+					margin: 2rem auto;
+				}
+
+				.form-group {
+					margin: 1em 0;
+				}
+
+				.form-group label {
+					display: block;
+					margin-bottom: 0.25em;
+				}
+
+				.form-group textarea {
+					width: 100%;
+					border: 0;
+					background: #eee;
+					min-height: 2em;
+					padding: 0.3em 0.5em;
+					font-size: 1.25rem;
+					font-family: monospace;
+					resize: vertical;
+				}
+
+				.form-group textarea.hex:read-only {
+					border: 0;
+
+					word-spacing: -0.2em;
+				}
+
+				.form-group textarea.changed {
+					background-color: #ffd68a;
+				}
+
+				#barcode.changed {
+					visibility: hidden;
+				}
+
+				#barcodedata {
+					word-break: break-all;
+				}
+
+				#barcodedata.verified {
+					background-color: #a1d4a1;
+				}
+
+				#barcodedata.rejected {
+					background-color: #ffa2a2;
+				}
+
+				#barcodemessage:empty { display: none; }
+				#barcodemessage {
+					width: 100%;
+					background-color: #ffeea7;
+					padding: 0.5em 0.5em 0.35em;
+				}
+		</style>
+		<link type="image/x-icon" rel="icon" href="data:image/x-icon;base64,iVBORw0KGgoAAAANSUhEUgAAABAAAAAQEAYAAABPYyMiAAAABmJLR0T///////8JWPfcAAAACXBIWXMAAABIAAAASABGyWs+AAAAF0lEQVRIx2NgGAWjYBSMglEwCkbBSAcACBAAAeaR9cIAAAAASUVORK5CYII=" />
+	</head>
+	<body>
+		<div class="container">
+			<h1>Signed QR-Code Generator</h1>
+			<div class="row">
+				<div class="col-md-12">
+					<div class="form-horizontal" role="form">
+						<div class="form-group">
+							<label for="message" class="">Message (utf-8)</label>
+							<div class="">
+								<textarea id="message" class="form-control" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" maxlength="256">Scarlett#Johansson#22.11.1984#2#bw-2941-1</textarea>
+							</div>
+						</div>
+						<div class="form-group">
+							<label for="master-secret-key" class="">Master Secret Key (hexadecimal)</label>
+							<div class="">
+								<textarea id="master-secret-key" class="form-control" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false">67d53f170b908cabb9eb326c3c337762d59289a8fec79f7bc9254b584b73265c</textarea>
+							</div>
+						</div>
+						<div class="form-group">
+							<button id="generate">Generate</button>
+							<button id="verify" disabled>Verify</button>
+						</div>
+						<div class="form-group">
+							<label for="master-public-key" class="">Master Public Key (hexadecimal, 96)</label>
+							<div class="">
+								<textarea id="master-public-key" class="form-control hex" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" readonly="true" rows="2"></textarea>
+							</div>
+						</div>
+						<div class="form-group">
+							<label for="signature" class="">Signature (hexadecimal, 192)</label>
+							<div class="">
+								<textarea id="signature" class="form-control hex" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" readonly="true" rows="4"></textarea>
+							</div>
+						</div>
+						<div class="form-group">
+							<label for="barcodedata" class="">Barcode data (Message # Signature)</label>
+							<div class="">
+								<div id="barcodemessage"></div>
+								<textarea id="barcodedata" class="form-control hex" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" rows="4"></textarea>
+							</div>
+						</div>
+						<div class="form-group">
+							<label for="compressed" class="">Compressed data (hexadecimal)</label>
+							<div class="">
+								<textarea id="compressed" class="form-control hex" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" readonly="true" rows="4"></textarea>
+							</div>
+						</div>
+						<div class="form-group">
+							<label for="" class="">QR Code</label>
+							<canvas id="barcode" width="300" height="300"></canvas>
+						</div>
+					</div>
+				</div>
+			</div>
+		</div>
+
+		<script type="module">
+			'use strict';
+
+			// https://github.com/paulmillr/noble-bls12-381
+			import { nobleBLS as bls } from './noble-bls.js';
+			// https://pieroxy.net/blog/pages/lz-string/
+			import { LZString as lz } from './lz-string.js';
+			// https://www.nayuki.io/page/qr-code-generator-library
+			import { qrcodegen as qr } from './qr-gen-lib.js';
+			
+			// define libraries
+			const libs = {};
+			libs.noblebls = bls;
+			libs.lzstring = lz;
+			libs.qr = qr;
+
+			const separator = '#';
+			const dom = {
+				'secretKey': document.querySelector('#master-secret-key'),
+				'publicKey': document.querySelector('#master-public-key'),
+				'message': document.querySelector('#message'),
+				'signature': document.querySelector('#signature'),
+				'compressed': document.querySelector('#compressed'),
+				'generate': document.querySelector('#generate'),
+				'verify': document.querySelector('#verify'),
+				'barcode': document.querySelector('#barcode'),
+				'barcodeData': document.querySelector('#barcodedata'),
+				'barcodeMessage': document.querySelector('#barcodemessage')
+			}
+
+			dom.secretKey.addEventListener('change', keyChanged);
+			dom.secretKey.addEventListener('keyup', keyChanged);
+			dom.message.addEventListener('change', messageChanged);
+			dom.message.addEventListener('keyup', messageChanged);
+			dom.barcodeData.addEventListener('change', barcodeDataChanged);
+			dom.barcodeData.addEventListener('keyup', barcodeDataChanged);
+
+			dom.generate.addEventListener('click', generate);
+			dom.verify.addEventListener('click', verifyBarcodeData);
+
+			// automatic textarea height
+			document.querySelectorAll('textarea').forEach(function (e, i) {
+				e.addEventListener('input', function (e2) {
+					autoGrowTextarea(e2.target);
+				});
+				e.addEventListener('change', function (e2) {
+					autoGrowTextarea(e2.target);
+				});
+			});
+
+			function keyChanged(e) {
+				dom.publicKey.classList.add('changed');
+				dom.signature.classList.add('changed');
+				dom.compressed.classList.add('changed');
+				dom.barcode.classList.add('changed');
+			}
+
+			function messageChanged(e) {
+				dom.signature.classList.add('changed');
+				dom.compressed.classList.add('changed');
+				dom.barcode.classList.add('changed');
+			}
+
+			// https://stackoverflow.com/a/34356351
+			function hexToBytes (hex) {
+				let bytes = new Uint8Array(hex.length/2);
+				for (let c = 0; c < hex.length; c += 2)
+					bytes[c/2] = parseInt(hex.substr(c, 2), 16);
+				return bytes;
+			}
+			
+			function bytesToHex (bytes) {
+				for (var hex = [], i = 0; i < bytes.length; i++) {
+					const current = bytes[i] < 0 ? bytes[i] + 256 : bytes[i];
+					const val = (current >>> 4).toString(16) + (current & 0xF).toString(16);
+					hex.push(val);
+				}
+				return hex;
+			}
+			
+			function strToHex (str) {
+				var hex, i;
+
+				var result = '';
+				for (i=0; i<str.length; i++) {
+					hex = str.charCodeAt(i).toString(16);
+					result += ('000' + hex).slice(-4);
+				}
+
+				return result;
+			}
+
+			// split a string in chunks of width n
+			function chunk (str, n, char) {
+				const exp = new RegExp('(.{'+n+'})', 'g');
+				return str.replace(exp,'$1' + char);
+			}
+
+			// make sure updating a textarea triggers the change event
+			function setTextareaValue (textarea, val) {
+				textarea.value = val;
+				if (typeof textarea.dispatchEvent === 'function') {
+					textarea.dispatchEvent(new Event('change'));
+				}
+			}
+
+			function autoGrowTextarea (element) {
+				element.style.height = '5px';
+				element.style.height = (element.scrollHeight + 2) + 'px';
+			}
+
+			function barcodeDataChanged(e) {
+
+				// skip for arrow keys
+				const skipKeys = ['ArrowLeft', 'ArrowUp', 'ArrowDown', 'ArrowRight', 'Shift', 'Alt', 'Meta'];
+				if (e.type === 'keyup' || e.type === 'keydown') {
+					if (skipKeys.includes(e.key)) {
+						return;
+					}
+				}
+
+				// update the compressed data
+				const lzData = libs.lzstring.compressToUint8Array(e.target.value);
+				const lzDataHex = bytesToHex(lzData);
+				
+				setTextareaValue(dom.compressed, lzDataHex.join(' '));
+				dom.compressed.dataset.raw = lzDataHex.join('');
+
+				dom.barcodeData.classList.remove('verified');
+				dom.barcodeData.classList.remove('rejected');
+				dom.barcodeMessage.textContent = '';
+
+				// QR Code
+				dom.barcode.classList.add('changed');
+				setTimeout(function () {
+					const qr = libs.qr.QrCode.encodeBinary(lzData, libs.qr.QrCode.Ecc.LOW);
+					qr.drawCanvas(4, 0, dom.barcode);
+
+					dom.barcode.classList.remove('changed');
+				}, 600);
+			}
+
+			function verifyBarcodeData(e) {
+				if(e) e.preventDefault();
+
+				const masterPublicKeyHex = dom.publicKey.dataset.raw;
+				const payloadHex = dom.compressed.dataset.raw;
+				
+				const payload = hexToBytes(payloadHex);
+				const uncompressed = libs.lzstring.decompressFromUint8Array(payload);
+
+				const data = uncompressed.split(separator);
+				const signature = data.pop();
+				const message = data.join(separator);
+
+				(async function () {
+					const masterPublicKey = hexToBytes(masterPublicKeyHex);
+					const messageHex = strToHex(message);
+
+					let verified;
+					try {
+						verified = await libs.noblebls.verify(signature, messageHex, masterPublicKey);
+					} catch (error) {
+						console.error(error);
+						dom.barcodeData.classList.remove('verified');
+						dom.barcodeData.classList.add('rejected');
+						dom.barcodeMessage.innerHTML = 'The verification failed with the following reason:<br />'+error;
+						return;
+					}
+
+					if (verified) {
+						console.log('The verification was successful! The data in the barcode is authentic and has not been modified.');
+
+						console.log('The data', data);
+						console.log('The signature', chunk(signature, 2, ' '));
+						dom.barcodeData.classList.remove('rejected');
+						dom.barcodeData.classList.add('verified');
+						dom.barcodeMessage.innerHTML = 'The verification passed! The barcode data is unmodified and the signature matched.';
+					} else {
+						console.log('The signature verification failed. The message has been tampered with!');
+						dom.barcodeData.classList.remove('verified');
+						dom.barcodeData.classList.add('rejected');
+						dom.barcodeMessage.innerHTML = 'The signature verification failed. The message has been tampered with!';
+					}
+				})();
+			}
+
+			function generate (e) {
+				e.preventDefault();
+				const masterSecretKey = hexToBytes(dom.secretKey.value);
+				const masterPublicKey = libs.noblebls.getPublicKey(masterSecretKey);
+
+				setTextareaValue(dom.publicKey, bytesToHex(masterPublicKey).join(' '));
+				dom.publicKey.dataset.raw = bytesToHex(masterPublicKey).join('');
+
+				// Scarlett#Johansson#22.11.1984#2#bw-2941-1
+				const messageText = dom.message.value;
+				const message = strToHex(dom.message.value);
+
+				(async function () {
+					const signature = await libs.noblebls.sign(message, masterSecretKey);
+					const verified = await libs.noblebls.verify(signature, message, masterPublicKey);
+
+					console.log('The signature', chunk(signature, 2, ' '));
+
+					if (!verified) {
+						console.log('The verification of the generated data failed!');
+						return false;
+					}
+
+					setTextareaValue(dom.signature, chunk(signature, 2, ' '));
+					dom.signature.dataset.raw = signature;
+
+					const barcodeData = dom.message.value + separator + signature;
+					setTextareaValue(dom.barcodeData, barcodeData);
+
+					// compress data for barcode
+					const lzData = libs.lzstring.compressToUint8Array(barcodeData);
+					const lzDataHex = bytesToHex(lzData);
+					
+					setTextareaValue(dom.compressed, lzDataHex.join(' '));
+					dom.compressed.dataset.raw = lzDataHex.join('');
+
+					// update the DOM
+					dom.publicKey.classList.remove('changed');
+					dom.signature.classList.remove('changed');
+					dom.compressed.classList.remove('changed');
+					dom.barcode.classList.remove('changed');
+					dom.barcodeData.classList.remove('rejected');
+					dom.barcodeData.classList.remove('verified');
+
+					// QR Code
+					const qr = libs.qr.QrCode.encodeBinary(lzData, libs.qr.QrCode.Ecc.LOW);
+					qr.drawCanvas(4, 0, dom.barcode);
+
+					// activate verify button
+					dom.verify.disabled = false;
+				})();
+			}
+		</script>
+	</body>
+</html>
